@@ -3,16 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
-	"github.com/VividCortex/godaemon"
+	"errors"
+	"fmt"
 	"github.com/en30/toggl"
+	"github.com/urfave/cli"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
-	"syscall"
 	"text/template"
 )
 
@@ -23,12 +22,21 @@ type Config struct {
 	WebhookURL  string             `json:"webhook_url"`
 	Users       map[string]Payload `json:"users"`
 	Templates   Templates          `json:"templates"`
-	LogFile     string             `json:"log_file"`
 }
 
 type Templates struct {
 	Started  *template.Template
 	Finished *template.Template
+}
+
+func (t Templates) MarshalJSON() ([]byte, error) {
+	if t.Started == nil && t.Finished == nil {
+		return json.Marshal(map[string]string{
+			"started":  "started {{.Description}}",
+			"finished": "finished {{.Description}}",
+		})
+	}
+	return []byte{}, nil
 }
 
 func (t *Templates) UnmarshalJSON(data []byte) error {
@@ -46,7 +54,7 @@ type Payload struct {
 	IconEmoji string `json:"icon_emoji,omitempty"`
 	IconUrl   string `json:"icon_url,omitempty"`
 	Username  string `json:"username"`
-	Text      string `json:"text"`
+	Text      string `json:"text,omitempty"`
 }
 
 func (p *Payload) reverseMergeDefault() {
@@ -64,8 +72,8 @@ func (p *Payload) reverseMergeDefault() {
 	}
 }
 
-func loadConfig(path *string) (*Config, error) {
-	file, err := os.Open(*path)
+func loadConfig(path string) (*Config, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -112,38 +120,45 @@ func notify(c *Config, t *template.Template, a *toggl.Activity, p Payload) error
 	return err
 }
 
-func main() {
+func configPath(c *cli.Context) string {
+	p := c.String("config")
+	if p == "" {
+		return "config.json"
+	} else {
+		return p
+	}
+}
+
+func generateConfig(c *cli.Context) error {
+	path := configPath(c)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		defaultConfig := Config{
+			Interval:   60,
+			TogglToken: "YOUR_TOGGL_TOKEN",
+			Templates:  Templates{},
+			WebhookURL: "https://hooks.slack.com/services/...",
+			Users:      map[string]Payload{"TOGGL_USER_ID": Payload{Channel: "#general", Username: "toggl2slack"}},
+		}
+		config, err := json.MarshalIndent(defaultConfig, "", "    ")
+		if err != nil {
+			return err
+		}
+		err = ioutil.WriteFile(path, config, 0644)
+		if err == nil {
+			fmt.Printf("%v was generated\n", path)
+		}
+		return err
+	} else {
+		return errors.New("config.json already exists")
+	}
+}
+
+func start(con *cli.Context) error {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	c := flag.String("config", "config.json", "configuration file path")
-	d := flag.Bool("daemonize", false, "daemonize")
-	flag.Parse()
+	c := configPath(con)
 	config, err := loadConfig(c)
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	openFiles := make([]**os.File, 0)
-
-	if config.LogFile != "" {
-		path, err := filepath.Abs(config.LogFile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
-		if err != nil {
-			log.Fatal(err)
-		}
-		openFiles = append(openFiles, &file)
-		err = syscall.Dup2(int(file.Fd()), int(os.Stderr.Fd()))
-		if err != nil {
-			log.Fatal(err)
-		}
-		log.SetOutput(file)
-
-	}
-
-	if *d {
-		godaemon.MakeDaemon(&godaemon.DaemonAttr{ProgramName: "toggl2slack", CaptureOutput: true, Files: openFiles})
 	}
 
 	onStart := func(a *toggl.Activity) {
@@ -171,4 +186,33 @@ func main() {
 		log.Fatal(err)
 	}
 	select {}
+}
+
+func main() {
+	app := cli.NewApp()
+	app.Name = "toggl2slack"
+	app.HelpName = "toggl2slack"
+	app.Usage = "notify Toggl activities to Slack"
+	app.Flags = []cli.Flag{
+		cli.StringFlag{
+			Name:  "config",
+			Value: "config.json",
+			Usage: "config file",
+		},
+	}
+	app.Commands = []cli.Command{
+		{
+			Name:    "init",
+			Aliases: []string{"g", "generate", "i"},
+			Usage:   "generate a config file",
+			Action:  generateConfig,
+		},
+		{
+			Name:    "start",
+			Aliases: []string{"s"},
+			Usage:   "start toggl2slack",
+			Action:  start,
+		},
+	}
+	app.Run(os.Args)
 }
