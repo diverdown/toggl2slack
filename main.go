@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Masterminds/sprig"
 	"github.com/en30/toggl"
 	"github.com/urfave/cli"
 	"io/ioutil"
@@ -44,8 +45,8 @@ func (t *Templates) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &j); err != nil {
 		return err
 	}
-	t.Started = template.Must(template.New("started").Parse(j["started"]))
-	t.Finished = template.Must(template.New("finished").Parse(j["finished"]))
+	t.Started = template.Must(template.New("started").Funcs(sprig.TxtFuncMap()).Parse(j["started"]))
+	t.Finished = template.Must(template.New("finished").Funcs(sprig.TxtFuncMap()).Parse(j["finished"]))
 	return nil
 }
 
