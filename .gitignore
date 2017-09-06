@@ -25,4 +25,5 @@ _testmain.go
 *.test
 *.prof
 
-
+toggl2slack.log
+config.json
